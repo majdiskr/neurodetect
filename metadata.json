@@ -1,0 +1,9 @@
+{
+  "name": "NeuroDetect: Smart Metal Scanner",
+  "description": "A PWA mobile application interface for the CNN-1D Metal Detector model. Features real-time magnetometer visualization, model performance metrics dashboard, and Gemini-powered analysis of sensor readings.",
+  "requestFramePermissions": [
+    "magnetometer",
+    "accelerometer",
+    "gyroscope"
+  ]
+}
