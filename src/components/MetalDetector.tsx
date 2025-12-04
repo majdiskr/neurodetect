@@ -106,13 +106,13 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
       setErrorMsg(
         <div className="flex flex-col gap-2">
           <span><strong>Sensor API Not Detected.</strong></span>
-          <span className="text-[10px]">Please enable permissions in Chrome Settings:</span>
+          <span className="text-[10px]">Your browser is hiding the sensor. Try this:</span>
           <ol className="list-decimal list-inside text-[10px] space-y-1 text-slate-300">
-            <li>Tap <strong>⋮ Menu</strong> &gt; <strong>Settings</strong></li>
-            <li>Go to <strong>Site Settings</strong></li>
-            <li>Tap <strong>Motion sensors</strong></li>
-            <li>Ensure it is set to <strong>Allowed</strong> (or ON)</li>
-            <li>Refresh this page</li>
+            <li>Open Chrome <strong>Settings</strong></li>
+            <li>Tap <strong>Site Settings</strong> &gt; <strong>Motion sensors</strong></li>
+            <li>Ensure it is <strong>Allowed</strong></li>
+            <li>Then, type <strong>chrome://flags</strong> in URL bar</li>
+            <li>Search <strong>"Generic Sensor"</strong> and Enable it.</li>
           </ol>
         </div>
       );
@@ -122,7 +122,9 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
 
     try {
       // @ts-ignore
-      const sensor = new window.Magnetometer({ frequency: 60 });
+      // Lower frequency to 10Hz to prevent crashing on older Androids
+      const sensor = new window.Magnetometer({ frequency: 10 });
+      
       sensor.addEventListener('reading', () => {
         if (sensor.x == null) return;
         const total = Math.sqrt(sensor.x**2 + sensor.y**2 + sensor.z**2);
@@ -134,20 +136,25 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
           timestamp: Date.now()
         });
       });
+      
       sensor.addEventListener('error', (e: any) => {
-        setErrorMsg(`Hardware Error: ${e.error.name}. Try restarting Chrome.`);
+        const errName = e.error?.name || 'Unknown';
+        if (errName === 'NotAllowedError') {
+           setErrorMsg("Permission Denied. Please reset permissions for this site by clicking the Lock icon in the address bar.");
+        } else if (errName === 'SecurityError') {
+           setErrorMsg("Security Block. Ensure you are using HTTPS (Netlify link).");
+        } else {
+           setErrorMsg(`Hardware Error: ${errName}. Try restarting Chrome.`);
+        }
         setIsScanning(false);
       });
+
       sensor.start();
       sensorRef.current = sensor;
       setIsScanning(true);
     } catch (err) {
-      setErrorMsg(
-        <div className="flex flex-col gap-1">
-           <span><strong>Permission Blocked.</strong></span>
-           <span className="text-[10px]">Chrome blocked the sensor. Click the <strong>Lock Icon 🔒</strong> in the URL bar and reset permissions.</span>
-        </div>
-      );
+      console.error(err);
+      setErrorMsg("Failed to start sensor. Ensure 'Motion Sensors' are allowed in Chrome Site Settings.");
       setIsScanning(false);
     }
   };
@@ -194,7 +201,7 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
       {errorMsg && (
         <div className="bg-amber-500/10 border border-amber-500/50 text-amber-200 p-3 rounded-lg text-xs flex items-start gap-2 animate-in fade-in slide-in-from-top-2">
           <Settings size={16} className="mt-1 shrink-0" />
-          {errorMsg}
+          <div>{errorMsg}</div>
         </div>
       )}
 
