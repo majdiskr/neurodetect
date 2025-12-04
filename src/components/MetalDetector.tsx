@@ -105,12 +105,14 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
     if (!('Magnetometer' in window)) {
       setErrorMsg(
         <div className="flex flex-col gap-2">
-          <span><strong>Sensor Not Found.</strong> To enable it on Android Chrome:</span>
-          <ol className="list-decimal list-inside text-[10px] space-y-1">
-            <li>Open a new tab and go to <code>chrome://flags</code></li>
-            <li>Search for <strong>"Generic Sensor"</strong></li>
-            <li>Enable <strong>"Generic Sensor Extra Classes"</strong></li>
-            <li>Relaunch Chrome</li>
+          <span><strong>Sensor API Not Detected.</strong></span>
+          <span className="text-[10px]">Please enable permissions in Chrome Settings:</span>
+          <ol className="list-decimal list-inside text-[10px] space-y-1 text-slate-300">
+            <li>Tap <strong>⋮ Menu</strong> &gt; <strong>Settings</strong></li>
+            <li>Go to <strong>Site Settings</strong></li>
+            <li>Tap <strong>Motion sensors</strong></li>
+            <li>Ensure it is set to <strong>Allowed</strong> (or ON)</li>
+            <li>Refresh this page</li>
           </ol>
         </div>
       );
@@ -133,14 +135,19 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
         });
       });
       sensor.addEventListener('error', (e: any) => {
-        setErrorMsg(`Hardware Error: ${e.error.name}. Make sure you are on HTTPS.`);
+        setErrorMsg(`Hardware Error: ${e.error.name}. Try restarting Chrome.`);
         setIsScanning(false);
       });
       sensor.start();
       sensorRef.current = sensor;
       setIsScanning(true);
     } catch (err) {
-      setErrorMsg("Permission Denied. Please reset site permissions.");
+      setErrorMsg(
+        <div className="flex flex-col gap-1">
+           <span><strong>Permission Blocked.</strong></span>
+           <span className="text-[10px]">Chrome blocked the sensor. Click the <strong>Lock Icon 🔒</strong> in the URL bar and reset permissions.</span>
+        </div>
+      );
       setIsScanning(false);
     }
   };
