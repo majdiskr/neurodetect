@@ -115,7 +115,7 @@ const App: React.FC = () => {
                       </ol>
                     </div>
                     <p className="text-xs text-slate-500 mt-4">
-                      Note: On desktop devices without sensors, the app defaults to Simulation Mode.
+                      <strong>Requirements:</strong> An Android device with a built-in Magnetometer sensor is required. iOS devices do not support web-based magnetic readings.
                     </p>
                  </div>
               )}
