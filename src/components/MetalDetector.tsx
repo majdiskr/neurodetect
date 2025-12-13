@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { LineChart, Line, YAxis, ResponsiveContainer } from 'recharts';
 import { MetalType, SensorData, PredictionResult } from '../types';
-import { Play, Pause, Zap, AlertTriangle, Waves, Settings, ShieldAlert, FlaskConical, SlidersHorizontal, RotateCcw } from 'lucide-react';
+import { Play, Pause, Zap, Waves, Settings, ShieldAlert, FlaskConical, SlidersHorizontal, RotateCcw, Compass, Smartphone } from 'lucide-react';
 
 interface MetalDetectorProps {
   onAnalyze: (result: PredictionResult, readings: number[]) => void;
@@ -14,11 +14,12 @@ const DEFAULT_SIM_NOISE = 2;
 const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [simulationMode, setSimulationMode] = useState(false);
+  const [sensorType, setSensorType] = useState<'Magnetometer' | 'Compass' | 'Simulation'>('Simulation');
   const [dataBuffer, setDataBuffer] = useState<SensorData[]>([]);
   
   // Simulation Settings
   const [simSettings, setSimSettings] = useState({ base: DEFAULT_SIM_BASE, noise: DEFAULT_SIM_NOISE });
-  const simSettingsRef = useRef(simSettings); // Ref to access latest state inside interval callback
+  const simSettingsRef = useRef(simSettings);
 
   const [currentPrediction, setCurrentPrediction] = useState<PredictionResult>({
     metalType: MetalType.NO_METAL,
@@ -29,6 +30,7 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
 
   const sensorRef = useRef<any>(null);
   const intervalRef = useRef<any>(null);
+  const lastAlphaRef = useRef<number>(0);
 
   // Update ref when settings change
   useEffect(() => {
@@ -38,17 +40,13 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
   // --- Simulation Logic ---
   const simulateReading = useCallback(() => {
     const time = Date.now();
-    
-    // Get latest values from ref
     let { base, noise: noiseLevel } = simSettingsRef.current;
     
     let currentBase = base;
     let currentNoise = Math.random() * noiseLevel;
 
-    // Randomly inject signals to simulate passing over metal (only if base is low/normal)
-    // If user has manually cranked the base high, we don't need random spikes as much
+    // Randomly inject signals to simulate passing over metal
     if (base < 80 && Math.random() > 0.96) {
-       // Simulate a wave passing by
        currentBase += Math.sin(time / 200) * 50; 
        currentNoise += Math.random() * 15; 
     }
@@ -137,6 +135,52 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
     });
   }, [dataBuffer]);
 
+  const handleOrientationReading = (e: DeviceOrientationEvent) => {
+    if (e.alpha === null) return;
+
+    // Calculate delta (handling 0-360 wraparound)
+    let delta = Math.abs(e.alpha - lastAlphaRef.current);
+    if (delta > 180) delta = 360 - delta;
+    
+    lastAlphaRef.current = e.alpha;
+
+    // Fallback Logic:
+    // Metal deflects the compass needle. We interpret rapid changes in heading (alpha)
+    // as magnetic anomalies. We map this delta to a "Magnitude" spike.
+    // Base 45uT (Earth) + amplified delta.
+    const signal = 45 + (delta * 8); 
+
+    handleNewReading({
+      x: 0, 
+      y: 0, 
+      z: 0, 
+      total: signal,
+      timestamp: Date.now()
+    });
+  };
+
+  const startCompassFallback = async () => {
+    try {
+      // iOS 13+ Permissions
+      if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+        const response = await (DeviceOrientationEvent as any).requestPermission();
+        if (response !== 'granted') {
+          showSensorError("Compass permission denied. Please enable Motion access.");
+          return;
+        }
+      }
+
+      window.addEventListener('deviceorientation', handleOrientationReading);
+      setSensorType('Compass');
+      setIsScanning(true);
+    } catch (e) {
+      console.error(e);
+      showSensorError("Compass access failed. Using Simulation.");
+      setSimulationMode(true);
+      startSimulation();
+    }
+  };
+
   const toggleScan = async () => {
     if (isScanning) {
       stopScan();
@@ -145,53 +189,60 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
 
     setErrorMsg(null);
 
-    // 1. Simulation Mode Check
+    // 1. Simulation Mode
     if (simulationMode) {
+      setSensorType('Simulation');
       startSimulation();
       return;
     }
 
-    // 2. Real Sensor Check
-    if (!('Magnetometer' in window)) {
-      showSensorError("Sensor API Missing. Switching to Simulation is recommended.");
-      return;
-    }
-
-    try {
-      // @ts-ignore
-      const permissions = await navigator.permissions.query({ name: 'magnetometer' as any });
-      if (permissions.state === 'denied') {
-        showSensorError("Permission Denied. Switch to Simulation?");
-        return;
+    // 2. Try High-Precision Magnetometer (Android/Chrome)
+    if ('Magnetometer' in window) {
+      try {
+        // @ts-ignore
+        const permissions = await navigator.permissions.query({ name: 'magnetometer' as any });
+        if (permissions.state === 'denied') {
+          console.warn("Magnetometer denied, trying compass...");
+          // Fall through to Compass
+        } else {
+           // @ts-ignore
+          const sensor = new window.Magnetometer({ frequency: 60 });
+          sensor.addEventListener('reading', () => {
+            if (sensor.x == null) return;
+            const total = Math.sqrt(sensor.x**2 + sensor.y**2 + sensor.z**2);
+            handleNewReading({
+              x: sensor.x, y: sensor.y, z: sensor.z, total, timestamp: Date.now()
+            });
+          });
+          sensor.addEventListener('error', (e: any) => {
+            console.error("Mag Error", e);
+            sensor.stop();
+            // Try fallback if hardware fails
+            if (!isScanning) startCompassFallback(); 
+          });
+          sensor.start();
+          sensorRef.current = sensor;
+          setSensorType('Magnetometer');
+          setIsScanning(true);
+          return;
+        }
+      } catch (err) {
+        console.log("Magnetometer init failed, falling back.");
       }
-
-      // @ts-ignore
-      const sensor = new window.Magnetometer({ frequency: 10 });
-      
-      sensor.addEventListener('reading', () => {
-        if (sensor.x == null) return;
-        const total = Math.sqrt(sensor.x**2 + sensor.y**2 + sensor.z**2);
-        handleNewReading({
-          x: sensor.x, y: sensor.y, z: sensor.z, total, timestamp: Date.now()
-        });
-      });
-      
-      sensor.addEventListener('error', (e: any) => {
-        console.error("Sensor Error:", e);
-        showSensorError("Sensor Hardware Error. Switch to Simulation?");
-        setIsScanning(false);
-      });
-
-      sensor.start();
-      sensorRef.current = sensor;
-      setIsScanning(true);
-    } catch (err: any) {
-      console.error(err);
-      const isSecure = window.isSecureContext;
-      const debugText = isSecure ? "Secure Context: True" : "Secure Context: False (Must be True)";
-      showSensorError(`Startup Error: ${err.message}. ${debugText}. Switch to Simulation?`);
-      setIsScanning(false);
     }
+
+    // 3. Fallback: Device Orientation (iOS/Safari/Standard)
+    if (window.DeviceOrientationEvent) {
+       await startCompassFallback();
+       return;
+    }
+
+    // 4. Last Resort
+    showSensorError("No sensors found. Switched to Simulation Mode.");
+    setSimulationMode(true);
+    setTimeout(() => {
+      startSimulation();
+    }, 1000);
   };
 
   const showSensorError = (msg: string) => {
@@ -202,7 +253,7 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
           onClick={() => { setSimulationMode(true); setErrorMsg(null); }}
           className="mt-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/50 rounded px-3 py-2 text-xs font-bold w-full"
         >
-          Enable Simulation Mode
+          Force Simulation Mode
         </button>
       </div>
     );
@@ -210,6 +261,7 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
 
   const startSimulation = () => {
     setIsScanning(true);
+    setSensorType('Simulation');
     intervalRef.current = window.setInterval(simulateReading, 1000 / 60);
   };
 
@@ -223,6 +275,7 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+    window.removeEventListener('deviceorientation', handleOrientationReading);
   };
 
   const handleManualAnalyze = () => {
@@ -259,8 +312,13 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
           </div>
         </div>
         <div className="text-right">
-          <h2 className="text-slate-400 text-xs uppercase tracking-widest font-bold">Model</h2>
-          <span className="text-cyan-400 font-mono font-bold">CNN-1D (Real-Time)</span>
+          <h2 className="text-slate-400 text-xs uppercase tracking-widest font-bold">Input Source</h2>
+          <div className="flex items-center justify-end gap-1 text-cyan-400 font-mono font-bold">
+            {sensorType === 'Magnetometer' && <><Waves size={14}/> <span>MAGNETOMETER</span></>}
+            {sensorType === 'Compass' && <><Compass size={14}/> <span>COMPASS (FALLBACK)</span></>}
+            {sensorType === 'Simulation' && <><FlaskConical size={14}/> <span>SIMULATION</span></>}
+            {!sensorType && <span className="text-slate-500">READY</span>}
+          </div>
         </div>
       </div>
 
