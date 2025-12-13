@@ -1,17 +1,25 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { LineChart, Line, YAxis, ResponsiveContainer } from 'recharts';
 import { MetalType, SensorData, PredictionResult } from '../types';
-import { Play, Pause, Zap, AlertTriangle, Waves, Settings } from 'lucide-react';
+import { Play, Pause, Zap, AlertTriangle, Waves, Settings, ShieldAlert, FlaskConical, SlidersHorizontal, RotateCcw } from 'lucide-react';
 
 interface MetalDetectorProps {
   onAnalyze: (result: PredictionResult, readings: number[]) => void;
 }
 
 const WINDOW_SIZE = 50;
+const DEFAULT_SIM_BASE = 45;
+const DEFAULT_SIM_NOISE = 2;
 
 const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
   const [isScanning, setIsScanning] = useState(false);
+  const [simulationMode, setSimulationMode] = useState(false);
   const [dataBuffer, setDataBuffer] = useState<SensorData[]>([]);
+  
+  // Simulation Settings
+  const [simSettings, setSimSettings] = useState({ base: DEFAULT_SIM_BASE, noise: DEFAULT_SIM_NOISE });
+  const simSettingsRef = useRef(simSettings); // Ref to access latest state inside interval callback
+
   const [currentPrediction, setCurrentPrediction] = useState<PredictionResult>({
     metalType: MetalType.NO_METAL,
     confidence: 0.0,
@@ -20,6 +28,41 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
   const [errorMsg, setErrorMsg] = useState<React.ReactNode | null>(null);
 
   const sensorRef = useRef<any>(null);
+  const intervalRef = useRef<any>(null);
+
+  // Update ref when settings change
+  useEffect(() => {
+    simSettingsRef.current = simSettings;
+  }, [simSettings]);
+
+  // --- Simulation Logic ---
+  const simulateReading = useCallback(() => {
+    const time = Date.now();
+    
+    // Get latest values from ref
+    let { base, noise: noiseLevel } = simSettingsRef.current;
+    
+    let currentBase = base;
+    let currentNoise = Math.random() * noiseLevel;
+
+    // Randomly inject signals to simulate passing over metal (only if base is low/normal)
+    // If user has manually cranked the base high, we don't need random spikes as much
+    if (base < 80 && Math.random() > 0.96) {
+       // Simulate a wave passing by
+       currentBase += Math.sin(time / 200) * 50; 
+       currentNoise += Math.random() * 15; 
+    }
+
+    const val = currentBase + currentNoise;
+    
+    handleNewReading({
+      x: val * 0.5,
+      y: val * 0.3,
+      z: val * 0.2,
+      total: val,
+      timestamp: time
+    });
+  }, []);
 
   const handleNewReading = (reading: SensorData) => {
     setDataBuffer(prev => {
@@ -67,6 +110,7 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
     let type = MetalType.NO_METAL;
     let conf = 0.85;
 
+    // Adjusted thresholds based on Python model analysis
     if (fftMax > 150) {
       if (std > 20) {
          type = MetalType.IRON; 
@@ -101,62 +145,72 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
 
     setErrorMsg(null);
 
-    // Feature Check
+    // 1. Simulation Mode Check
+    if (simulationMode) {
+      startSimulation();
+      return;
+    }
+
+    // 2. Real Sensor Check
     if (!('Magnetometer' in window)) {
-      setErrorMsg(
-        <div className="flex flex-col gap-2">
-          <span><strong>Sensor API Not Detected.</strong></span>
-          <span className="text-[10px]">Your browser is hiding the sensor. Try this:</span>
-          <ol className="list-decimal list-inside text-[10px] space-y-1 text-slate-300">
-            <li>Open Chrome <strong>Settings</strong></li>
-            <li>Tap <strong>Site Settings</strong> &gt; <strong>Motion sensors</strong></li>
-            <li>Ensure it is <strong>Allowed</strong></li>
-            <li>Then, type <strong>chrome://flags</strong> in URL bar</li>
-            <li>Search <strong>"Generic Sensor"</strong> and Enable it.</li>
-          </ol>
-        </div>
-      );
-      setIsScanning(false);
+      showSensorError("Sensor API Missing. Switching to Simulation is recommended.");
       return;
     }
 
     try {
       // @ts-ignore
-      // Lower frequency to 10Hz to prevent crashing on older Androids
+      const permissions = await navigator.permissions.query({ name: 'magnetometer' as any });
+      if (permissions.state === 'denied') {
+        showSensorError("Permission Denied. Switch to Simulation?");
+        return;
+      }
+
+      // @ts-ignore
       const sensor = new window.Magnetometer({ frequency: 10 });
       
       sensor.addEventListener('reading', () => {
         if (sensor.x == null) return;
         const total = Math.sqrt(sensor.x**2 + sensor.y**2 + sensor.z**2);
         handleNewReading({
-          x: sensor.x,
-          y: sensor.y,
-          z: sensor.z,
-          total,
-          timestamp: Date.now()
+          x: sensor.x, y: sensor.y, z: sensor.z, total, timestamp: Date.now()
         });
       });
       
       sensor.addEventListener('error', (e: any) => {
-        const errName = e.error?.name || 'Unknown';
-        if (errName === 'NotAllowedError') {
-           setErrorMsg("Permission Denied. Please reset permissions for this site by clicking the Lock icon in the address bar.");
-        } else if (errName === 'SecurityError') {
-           setErrorMsg("Security Block. Ensure you are using HTTPS (Netlify link).");
-        } else {
-           setErrorMsg(`Hardware Error: ${errName}. Try restarting Chrome.`);
-        }
+        console.error("Sensor Error:", e);
+        showSensorError("Sensor Hardware Error. Switch to Simulation?");
         setIsScanning(false);
       });
 
       sensor.start();
       sensorRef.current = sensor;
       setIsScanning(true);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setErrorMsg("Failed to start sensor. Ensure 'Motion Sensors' are allowed in Chrome Site Settings.");
+      const isSecure = window.isSecureContext;
+      const debugText = isSecure ? "Secure Context: True" : "Secure Context: False (Must be True)";
+      showSensorError(`Startup Error: ${err.message}. ${debugText}. Switch to Simulation?`);
       setIsScanning(false);
     }
+  };
+
+  const showSensorError = (msg: string) => {
+    setErrorMsg(
+      <div className="flex flex-col gap-2">
+        <span className="text-amber-400 font-bold flex items-center gap-2"><ShieldAlert size={16}/> {msg}</span>
+        <button 
+          onClick={() => { setSimulationMode(true); setErrorMsg(null); }}
+          className="mt-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/50 rounded px-3 py-2 text-xs font-bold w-full"
+        >
+          Enable Simulation Mode
+        </button>
+      </div>
+    );
+  };
+
+  const startSimulation = () => {
+    setIsScanning(true);
+    intervalRef.current = window.setInterval(simulateReading, 1000 / 60);
   };
 
   const stopScan = () => {
@@ -165,11 +219,23 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
       sensorRef.current.stop();
       sensorRef.current = null;
     }
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
   };
 
   const handleManualAnalyze = () => {
     const magnitudes = dataBuffer.map(d => d.total);
     onAnalyze(currentPrediction, magnitudes);
+  };
+
+  const handleSimChange = (key: 'base' | 'noise', value: string) => {
+    setSimSettings(prev => ({ ...prev, [key]: parseFloat(value) }));
+  };
+
+  const resetSimSettings = () => {
+    setSimSettings({ base: DEFAULT_SIM_BASE, noise: DEFAULT_SIM_NOISE });
   };
 
   const getStatusColor = () => {
@@ -201,7 +267,43 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
       {errorMsg && (
         <div className="bg-amber-500/10 border border-amber-500/50 text-amber-200 p-3 rounded-lg text-xs flex items-start gap-2 animate-in fade-in slide-in-from-top-2">
           <Settings size={16} className="mt-1 shrink-0" />
-          <div>{errorMsg}</div>
+          <div className="w-full">{errorMsg}</div>
+        </div>
+      )}
+
+      {/* Simulation Controls - Only visible in Sim Mode */}
+      {simulationMode && (
+        <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-3 animate-in fade-in slide-in-from-top-2">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-xs text-amber-400 font-bold flex items-center gap-1">
+              <SlidersHorizontal size={12} /> SIMULATION CONTROLS
+            </h3>
+            <button onClick={resetSimSettings} className="text-slate-400 hover:text-white transition-colors" title="Reset Defaults">
+              <RotateCcw size={12} />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+               <label className="text-[10px] text-slate-400 block mb-1">Base Strength (µT)</label>
+               <input 
+                 type="range" min="20" max="200" step="1" 
+                 value={simSettings.base} 
+                 onChange={(e) => handleSimChange('base', e.target.value)}
+                 className="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+               />
+               <div className="text-right text-[10px] text-cyan-300 font-mono">{simSettings.base}</div>
+            </div>
+            <div>
+               <label className="text-[10px] text-slate-400 block mb-1">Noise Level</label>
+               <input 
+                 type="range" min="0" max="50" step="1" 
+                 value={simSettings.noise} 
+                 onChange={(e) => handleSimChange('noise', e.target.value)}
+                 className="w-full h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-purple-500"
+               />
+               <div className="text-right text-[10px] text-purple-300 font-mono">{simSettings.noise}</div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -257,7 +359,7 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
            className={`p-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all active:scale-95 ${isScanning ? 'bg-red-500/10 text-red-400 border border-red-500/50 hover:bg-red-500/20' : 'bg-cyan-500 text-slate-900 hover:bg-cyan-400'}`}
          >
            {isScanning ? <Pause size={20} /> : <Play size={20} />}
-           {isScanning ? 'STOP SCAN' : 'START SCAN'}
+           {isScanning ? 'STOP' : 'START'}
          </button>
 
          <button 
@@ -271,11 +373,17 @@ const MetalDetector: React.FC<MetalDetectorProps> = ({ onAnalyze }) => {
       </div>
 
       <div className="flex justify-between items-center px-2">
+         <div className="flex items-center gap-2">
+           <button 
+             onClick={() => { stopScan(); setSimulationMode(!simulationMode); }}
+             className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border transition-colors ${simulationMode ? 'bg-amber-500/20 border-amber-500 text-amber-300' : 'bg-slate-800 border-slate-600 text-slate-400'}`}
+           >
+             <FlaskConical size={10} />
+             {simulationMode ? 'SIMULATION' : 'SENSOR MODE'}
+           </button>
+         </div>
          <span className="text-[10px] text-slate-600 font-mono">
-            Sensor: {isScanning ? 'Active' : 'Offline'}
-         </span>
-         <span className="text-[10px] text-slate-600 font-mono">
-            {dataBuffer.length} samples (Window: {WINDOW_SIZE})
+            {dataBuffer.length} samples
          </span>
       </div>
     </div>
