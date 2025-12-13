@@ -109,14 +109,10 @@ const App: React.FC = () => {
                       <ol className="list-decimal list-inside text-slate-300 space-y-2 text-sm">
                         <li>Ensure you are on a mobile device with a Magnetometer.</li>
                         <li>Click <strong>Start Scan</strong>.</li>
-                        <li>Move device close to object.</li>
-                        <li>Observe the classification ring.</li>
+                        <li>If "Sensor Error" appears, click <strong>Enable Simulation Mode</strong> to test with synthetic data.</li>
                         <li>Click <strong>AI Analyze</strong> for Gemini insights.</li>
                       </ol>
                     </div>
-                    <p className="text-xs text-slate-500 mt-4">
-                      <strong>Requirements:</strong> An Android device with a built-in Magnetometer sensor is required. iOS devices do not support web-based magnetic readings.
-                    </p>
                  </div>
               )}
            </div>
